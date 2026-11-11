@@ -110,22 +110,45 @@ export default class ObsidianWebhooksPlugin extends Plugin {
     path: string | Array<string>;
   }) {
     const fs = this.app.vault.adapter;
-    let path: string;
+    let rawPath: string;
     if (typeof pathOrArr === "string") {
-      path = pathOrArr;
+      rawPath = pathOrArr;
+    } else if (pathOrArr && typeof pathOrArr === "object") {
+      rawPath = Object.values(pathOrArr)[0] || "";
     } else {
-      path = Object.values(pathOrArr).first();
+      throw new Error("Invalid path parameter in webhook event");
     }
 
-    let dirPath = path.replace(/\/*$/, "").replace(/^(.+)\/[^\/]*?$/, "$1");
-    if (dirPath !== path) {
-      // == means its in the root
-      const exists = await fs.stat(dirPath);
+    if (!rawPath || typeof rawPath !== "string") {
+      throw new Error("Empty path in webhook event");
+    }
+
+    // Sanitize path to prevent path traversal outside vault
+    const cleanPath = rawPath.replace(/^[/\\]+/, "").trim();
+    const parts: string[] = [];
+    for (const segment of cleanPath.split(/[/\\]+/)) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {
+        throw new Error(
+          `Directory traversal attempt detected in webhook path: ${rawPath}`
+        );
+      }
+      parts.push(segment);
+    }
+    const path = parts.join("/");
+    if (!path) {
+      throw new Error("Invalid empty path in webhook event");
+    }
+
+    const lastSlash = path.lastIndexOf("/");
+    if (lastSlash > 0) {
+      const dirPath = path.substring(0, lastSlash);
+      const exists = await fs.exists(dirPath);
       if (!exists) {
         await fs.mkdir(dirPath);
       }
     }
-    let contentToSave = data;
+    let contentToSave = data ?? "";
     if (this.settings.newLineType == NewLineType.UnixMac) {
       contentToSave += "\n";
     } else if (this.settings.newLineType == NewLineType.Windows) {
@@ -172,7 +195,7 @@ class WebhookSettingTab extends PluginSettingTab {
     super(oApp, plugin);
     this.plugin = plugin;
     this.auth = getAuth(this.plugin.firebase);
-    this.authObserver = this.auth.onAuthStateChanged(this.display);
+    this.authObserver = this.auth.onAuthStateChanged(this.display.bind(this));
   }
 
   hide(): void {
